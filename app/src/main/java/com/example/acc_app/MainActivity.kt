@@ -1,27 +1,27 @@
 package com.example.acc_app
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
-import com.example.acc_app.ui.theme.Acc_appTheme
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.Text
+import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.acc_app.ui.theme.Acc_appTheme
 
 class MainActivity : ComponentActivity() {
-
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
-
-    // State holder for accelerometer data
     private var accelerometerData by mutableStateOf(Triple(0f, 0f, 0f))
 
     private val sensorListener = object : SensorEventListener {
@@ -32,7 +32,7 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-            // Handle sensor accuracy changes if needed
+            // Not used in this example
         }
     }
 
@@ -44,17 +44,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             Acc_appTheme {
-                // A surface container using the 'background' color from the theme
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    val (x, y, z) = accelerometerData
-                    Greeting("Android", x, y, z)
-                }
+                SensorScreen(accelerometerData)
             }
         }
     }
-
     override fun onResume() {
         super.onResume()
+        // Register the listener
         accelerometer?.let { sensor ->
             sensorManager.registerListener(sensorListener, sensor, SensorManager.SENSOR_DELAY_NORMAL)
         }
@@ -62,22 +58,27 @@ class MainActivity : ComponentActivity() {
 
     override fun onPause() {
         super.onPause()
+        // Unregister the listener
         sensorManager.unregisterListener(sensorListener)
     }
 }
 
 @Composable
-fun Greeting(name: String, x: Float, y: Float, z: Float, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name! x: $x, y: $y, z: $z",
-        modifier = modifier
-    )
-}
+fun SensorScreen(accelerometerData: Triple<Float, Float, Float>) {
+    var showData by remember { mutableStateOf(false) }
 
-@Preview(showBackground = true)
-@Composable
-fun DefaultPreview() {
-    Acc_appTheme {
-        Greeting("Android", 0f, 0f, 0f)
+    Column(modifier = Modifier.padding(16.dp)) {
+        Button(onClick = { showData = true }) {
+            Text("Show Sensor Data", fontSize = 18.sp)
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        if (showData) {
+            Text("Accelerometer Data", fontSize = 18.sp)
+            Text("X: ${accelerometerData.first}", fontSize = 16.sp)
+            Text("Y: ${accelerometerData.second}", fontSize = 16.sp)
+            Text("Z: ${accelerometerData.third}", fontSize = 16.sp)
+        }
     }
 }

@@ -19,6 +19,9 @@ import com.example.acc_app.ui.theme.Acc_appTheme
 import java.io.File
 import java.io.FileWriter
 import kotlinx.coroutines.delay
+import androidx.core.content.FileProvider
+import com.example.acc_app.BuildConfig
+
 
 class MainActivity : ComponentActivity() {
     private lateinit var sensorManager: SensorManager
@@ -38,6 +41,8 @@ class MainActivity : ComponentActivity() {
     private val recordedData = mutableListOf<SensorData>()
 
     private var statusMessage by mutableStateOf("")
+
+    private var savedFile: File? = null
 
     private val sensorListener = object : SensorEventListener {
         override fun onSensorChanged(event: SensorEvent?) {
@@ -129,6 +134,17 @@ class MainActivity : ComponentActivity() {
                 Text("Save Recorded Data", fontSize = 18.sp)
             }
 
+            Button(onClick = {
+                savedFile?.let { fileToShare ->
+                    shareDataFile(fileToShare)
+                } ?: run {
+                    statusMessage = "No file to share"
+                }
+            }) {
+                Text("Share CSV File", fontSize = 18.sp)
+            }
+
+
             Spacer(modifier = Modifier.height(16.dp))
             Text(statusMessage, fontSize = 16.sp)
 
@@ -143,7 +159,7 @@ class MainActivity : ComponentActivity() {
         }
     }
     private fun saveDataToFile() {
-        val fileName = "sensor_data_${System.currentTimeMillis()}.csv"
+        val fileName = "sensor_data_${System.currentTimeMillis()}.csv" //エミュレーター上（view>tool windows>device explorer）ではsdcard>Android>data>com.example.acc_app>filesに格納される
         val file = File(getExternalFilesDir(null), fileName)
         FileWriter(file).use { writer ->
             writer.append("Timestamp,AccelX,AccelY,AccelZ,GravityX,GravityY,GravityZ\n")
@@ -153,6 +169,7 @@ class MainActivity : ComponentActivity() {
         }
         // Check if the file is saved correctly and accessible
         if (file.exists()) {
+            savedFile = file // Update the savedFile property
             statusMessage = "CSV file saved: ${file.absolutePath}"
         } else {
             statusMessage = "Failed to save CSV file"
@@ -162,7 +179,14 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun shareDataFile(file: File) {
-        // Share implementation (as previously described)
+        val uri = FileProvider.getUriForFile(this, "${BuildConfig.APPLICATION_ID}.provider", file)
+        val shareIntent = Intent().apply {
+            action = Intent.ACTION_SEND
+            type = "text/csv"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        startActivity(Intent.createChooser(shareIntent, "Share CSV File"))
     }
 }
 

@@ -117,7 +117,7 @@ class MainActivity : ComponentActivity() {
         Column(modifier = Modifier.padding(16.dp)) {
             Button(onClick = {
                 isRecording = true
-                //createNewFileForRecording() // Call a method to create a new file and FileWriter
+                createNewFileForRecording() // Call a method to create a new file and FileWriter
                 CoroutineScope(Dispatchers.IO).launch {
                     while (isRecording) {
                         saveDataToFile()
@@ -143,7 +143,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    /*
     private fun createNewFileForRecording() {
         val newFileName = "sensor_data_${System.currentTimeMillis()}.csv"
         val file = File(getExternalFilesDir(null), newFileName)
@@ -151,7 +150,7 @@ class MainActivity : ComponentActivity() {
         fileWriter.append("Timestamp,AccelX,AccelY,AccelZ,GravityX,GravityY,GravityZ,LinearAccelX,LinearAccelY,LinearAccelZ,StepCount,GyroX,GyroY,GyroZ\n") // Write the header
         fileWriter.flush()
     }
-     */
+
 
     private fun saveDataToFile() {
         CoroutineScope(Dispatchers.IO).launch {

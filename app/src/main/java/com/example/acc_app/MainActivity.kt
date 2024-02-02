@@ -1,6 +1,5 @@
 package com.example.acc_app
 
-import android.content.Intent
 import android.os.Bundle
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -18,7 +17,7 @@ import androidx.compose.ui.unit.sp
 import com.example.acc_app.ui.theme.Acc_appTheme
 import java.io.File
 import java.io.FileWriter
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.*
 
 class MainActivity : ComponentActivity() {
     private lateinit var sensorManager: SensorManager
@@ -50,7 +49,16 @@ class MainActivity : ComponentActivity() {
                     Sensor.TYPE_GYROSCOPE -> gyroscopeData = Triple(it.values[0], it.values[1], it.values[2])
                 }
                 if (isRecording) {
-                    recordedData.add(SensorData(System.currentTimeMillis(), accelerometerData, gravityData, /*... other sensor data ...*/))
+                    recordedData.add(
+                        SensorData(
+                            System.currentTimeMillis(),
+                            accelerometerData,
+                            gravityData,
+                            linearAccelData,
+                            stepCountData,
+                            gyroscopeData
+                        )
+                    )
                 }
             }
         }
@@ -59,6 +67,9 @@ class MainActivity : ComponentActivity() {
             // Not used in this example
         }
     }
+
+    private lateinit var fileWriter: FileWriter
+    private val fileName = "sensor_data.csv"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,6 +86,15 @@ class MainActivity : ComponentActivity() {
                 SensorScreen()
             }
         }
+
+        val file = File(getExternalFilesDir(null), fileName)
+        if (!file.exists()) {
+            fileWriter = FileWriter(file, true)
+            fileWriter.append("Timestamp,AccelX,AccelY,AccelZ,GravityX,GravityY,GravityZ,LinearAccelX,LinearAccelY,LinearAccelZ,StepCount,GyroX,GyroY,GyroZ\n")
+            fileWriter.flush()
+        } else {
+            fileWriter = FileWriter(file, true)
+        }
     }
 
     override fun onResume() {
@@ -89,26 +109,21 @@ class MainActivity : ComponentActivity() {
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(sensorListener)
+        fileWriter.close() // Ensure fileWriter is properly closed
     }
 
     @Composable
     fun SensorScreen() {
-        var showData by remember { mutableStateOf(false) }
-        var lastUpdate by remember { mutableStateOf(0L) }
-
-        LaunchedEffect(showData) {
-            while (showData) {
-                delay(1000) // Delay for 1 second
-                lastUpdate = System.currentTimeMillis()
-            }
-        }
-
         Column(modifier = Modifier.padding(16.dp)) {
-            Button(onClick = { showData = !showData }) {
-                Text("Toggle Sensor Data", fontSize = 18.sp)
-            }
             Button(onClick = {
                 isRecording = true
+                //createNewFileForRecording() // Call a method to create a new file and FileWriter
+                CoroutineScope(Dispatchers.IO).launch {
+                    while (isRecording) {
+                        saveDataToFile()
+                        delay(10000) // Delay for 10 seconds
+                    }
+                }
                 statusMessage = "Recording started"
             }) {
                 Text("Start Recording", fontSize = 18.sp)
@@ -116,59 +131,54 @@ class MainActivity : ComponentActivity() {
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            Button(onClick = { isRecording = false }) {
-                Text("Stop Recording", fontSize = 18.sp)
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
             Button(onClick = {
-                saveDataToFile()
-                statusMessage = "Data saved to CSV"
+                isRecording = false
+                statusMessage = "Recording stopped"
             }) {
-                Text("Save Recorded Data", fontSize = 18.sp)
+                Text("Stop Recording", fontSize = 18.sp)
             }
 
             Spacer(modifier = Modifier.height(16.dp))
             Text(statusMessage, fontSize = 16.sp)
-
-            if (showData) {
-                Text("Last Updated: $lastUpdate", fontSize = 16.sp)
-                Text("Accelerometer: X=${accelerometerData.first} Y=${accelerometerData.second} Z=${accelerometerData.third}", fontSize = 16.sp)
-                Text("Gravity: X=${gravityData.first} Y=${gravityData.second} Z=${gravityData.third}", fontSize = 16.sp)
-                Text("Linear Accel: X=${linearAccelData.first} Y=${linearAccelData.second} Z=${linearAccelData.third}", fontSize = 16.sp)
-                Text("Step Counter: $stepCountData", fontSize = 16.sp)
-                Text("Gyroscope: X=${gyroscopeData.first} Y=${gyroscopeData.second} Z=${gyroscopeData.third}", fontSize = 16.sp)
-            }
         }
     }
+
+    /*
+    private fun createNewFileForRecording() {
+        val newFileName = "sensor_data_${System.currentTimeMillis()}.csv"
+        val file = File(getExternalFilesDir(null), newFileName)
+        fileWriter = FileWriter(file, true) // Reinitialize the FileWriter with the new file
+        fileWriter.append("Timestamp,AccelX,AccelY,AccelZ,GravityX,GravityY,GravityZ,LinearAccelX,LinearAccelY,LinearAccelZ,StepCount,GyroX,GyroY,GyroZ\n") // Write the header
+        fileWriter.flush()
+    }
+     */
+
     private fun saveDataToFile() {
-        val fileName = "sensor_data_${System.currentTimeMillis()}.csv"
-        val file = File(getExternalFilesDir(null), fileName)
-        FileWriter(file).use { writer ->
-            writer.append("Timestamp,AccelX,AccelY,AccelZ,GravityX,GravityY,GravityZ\n")
-            recordedData.forEach { data ->
-                writer.append("${data.timestamp},${data.accelerometerData.first},${data.accelerometerData.second},${data.accelerometerData.third},${data.gravityData.first},${data.gravityData.second},${data.gravityData.third}\n")
+        CoroutineScope(Dispatchers.IO).launch {
+            val dataToWrite = synchronized(recordedData) {
+                val copy = recordedData.toList() // Make a copy of the data to write
+                recordedData.clear() // Clear the original list
+                copy
+            }
+
+            dataToWrite.forEach { data ->
+                fileWriter.append("${data.timestamp},${data.accelerometerData.first},${data.accelerometerData.second},${data.accelerometerData.third},${data.gravityData.first},${data.gravityData.second},${data.gravityData.third},${data.linearAccelData.first},${data.linearAccelData.second},${data.linearAccelData.third},${data.stepCountData},${data.gyroscopeData.first},${data.gyroscopeData.second},${data.gyroscopeData.third}\n")
+            }
+            fileWriter.flush()
+
+            withContext(Dispatchers.Main) {
+                // Update any UI components here if necessary
+                statusMessage = "Data saved at ${System.currentTimeMillis()}"
             }
         }
-        // Check if the file is saved correctly and accessible
-        if (file.exists()) {
-            statusMessage = "CSV file saved: ${file.absolutePath}"
-        } else {
-            statusMessage = "Failed to save CSV file"
-        }
-        // Uncomment to share the file
-        // shareDataFile(file)
-    }
-
-    private fun shareDataFile(file: File) {
-        // Share implementation (as previously described)
     }
 }
 
 data class SensorData(
     val timestamp: Long,
     val accelerometerData: Triple<Float, Float, Float>,
-    val gravityData: Triple<Float, Float, Float>
-    // Include other sensors if needed
+    val gravityData: Triple<Float, Float, Float>,
+    val linearAccelData: Triple<Float, Float, Float>,
+    val stepCountData: Float,
+    val gyroscopeData: Triple<Float, Float, Float>
 )

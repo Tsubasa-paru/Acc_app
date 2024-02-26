@@ -18,6 +18,10 @@ import com.example.acc_app.ui.theme.Acc_appTheme
 import java.io.File
 import java.io.FileWriter
 import kotlinx.coroutines.*
+import android.content.Intent
+
+
+
 
 class MainActivity : ComponentActivity() {
     private lateinit var sensorManager: SensorManager
@@ -125,6 +129,9 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 statusMessage = "Recording started"
+
+                startSensorService()
+
             }) {
                 Text("Start Recording", fontSize = 18.sp)
             }
@@ -134,6 +141,9 @@ class MainActivity : ComponentActivity() {
             Button(onClick = {
                 isRecording = false
                 statusMessage = "Recording stopped"
+
+                stopSensorService()
+
             }) {
                 Text("Stop Recording", fontSize = 18.sp)
             }
@@ -171,7 +181,18 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+    private fun startSensorService() {
+        val serviceIntent = Intent(this, SensorService::class.java)
+        startForegroundService(serviceIntent)
+    }
+
+    private fun stopSensorService() {
+        val serviceIntent = Intent(this, SensorService::class.java)
+        stopService(serviceIntent)
+    }
 }
+
+
 
 data class SensorData(
     val timestamp: Long,

@@ -21,6 +21,16 @@ class SensorService : Service() {
             .setSmallIcon(R.drawable.ic_launcher_foreground) // Set your own icon
             .build()
 
+        Thread(
+            Runnable {
+                while(true){
+                    Thread.sleep(1000)
+                    //ここ　書き込み別で作る ボタン、書き込みでファイルを分ける
+                }
+                // ここで無限ループとsleepなどを書いて、定期的にファイルを書き込むようにする
+                stopForeground(Service.STOP_FOREGROUND_REMOVE)
+            }).start()
+
         startForeground(1, notification)
 
         // Place your sensor data collection logic here

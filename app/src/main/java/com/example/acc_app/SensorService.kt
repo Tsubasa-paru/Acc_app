@@ -18,6 +18,7 @@ import android.os.Build
 import android.content.pm.ServiceInfo
 import kotlin.math.pow
 import kotlin.math.sqrt
+import android.util.Log
 
 private fun createFolderName(): String {
     val timestamp = System.currentTimeMillis()
@@ -28,6 +29,7 @@ class SensorService : Service(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
     private lateinit var predictionsFileWriter: FileWriter
     private val predictionsFileName = "predictions_${System.currentTimeMillis()}.csv"
+    private lateinit var folderName: String
 
     private lateinit var accelerometerFileWriter: FileWriter
     private lateinit var gravityFileWriter: FileWriter
@@ -40,6 +42,9 @@ class SensorService : Service(), SensorEventListener {
     private val linearAccelerationFileName = "linear_acceleration_data_${System.currentTimeMillis()}.csv"
     private val stepCountFileName = "step_count_data_${System.currentTimeMillis()}.csv"
     private val gyroscopeFileName = "gyroscope_data_${System.currentTimeMillis()}.csv"
+
+    private lateinit var featuresFileWriter: FileWriter
+    private val FEATURES_FILE_NAME = "features_data_${System.currentTimeMillis()}.csv"
 
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
     private val sensorDataBuffer = mutableListOf<SensorData>()
@@ -61,7 +66,7 @@ class SensorService : Service(), SensorEventListener {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
-        val folderName = createFolderName()
+        folderName = createFolderName()
         val folder = File(getExternalFilesDir(null), folderName)
         if (!folder.exists()) {
             folder.mkdirs()
@@ -74,6 +79,7 @@ class SensorService : Service(), SensorEventListener {
             createFileForStepCountData(folder)
             createFileForGyroscopeData(folder)
             createFileForPredictionsData(folder)
+            createFileForFeaturesData(folder)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -182,6 +188,12 @@ class SensorService : Service(), SensorEventListener {
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
+
+                // 特徴量の計算と保存
+                calculateAndSaveFeatures()
+
+                // 10秒間隔で特徴量を計算
+                delay(10000)
             }
         }
     }
@@ -228,6 +240,15 @@ class SensorService : Service(), SensorEventListener {
         }
     }
 
+    private fun createFileForFeaturesData(folder: File) {
+        val file = File(folder, FEATURES_FILE_NAME)
+        featuresFileWriter = FileWriter(file, true).apply {
+            if (file.length() == 0L) {
+                append("Timestamp,XMean,XStdDev,XMax,XMin,XQ1,XQ2,XQ3,YMean,YStdDev,YMax,YMin,YQ1,YQ2,YQ3,ZMean,ZStdDev,ZMax,ZMin,ZQ1,ZQ2,ZQ3\n")
+            }
+        }
+    }
+
     private fun extractFeatures(dataList: List<SensorData>) {
         if (dataList.size < 100) return
 
@@ -253,11 +274,11 @@ class SensorService : Service(), SensorEventListener {
         extractedFeatures.addAll(featureList)
     }
 
-    private fun extractFeaturesFromSensorData(sensorData: List<Triple<Float, Float, Float>>): Map<String, Float> {
-        val features = mutableMapOf<String, Float>()
-        val xValues = sensorData.map { it.first }
-        val yValues = sensorData.map { it.second }
-        val zValues = sensorData.map { it.third }
+    private fun extractFeaturesFromSensorData(sensorData: List<Triple<Float, Float, Float>>): Map<String, Double> {
+        val features = mutableMapOf<String, Double>()
+        val xValues = sensorData.map { it.first.toDouble() }
+        val yValues = sensorData.map { it.second.toDouble() }
+        val zValues = sensorData.map { it.third.toDouble() }
 
         for ((index, values) in listOf(xValues, yValues, zValues).withIndex()) {
             val column = when (index) {
@@ -265,32 +286,64 @@ class SensorService : Service(), SensorEventListener {
                 1 -> "y"
                 else -> "z"
             }
-            features["${column}_mean"] = values.average().toFloat()
-            features["${column}_std"] = values.stdDev().toFloat()
-            features["${column}_max"] = values.maxOrNull()?.toFloat() ?: 0f
-            features["${column}_min"] = values.minOrNull()?.toFloat() ?: 0f
-            features["${column}_quantile25"] = values.percentile(25)?.toFloat() ?: 0f
-            features["${column}_median"] = values.percentile(50)?.toFloat() ?: 0f
-            features["${column}_quantile75"] = values.percentile(75)?.toFloat() ?: 0f
+            features["${column}_mean"] = values.average()
+            features["${column}_std"] = values.stdDev()
+            features["${column}_max"] = values.maxOrNull() ?: 0.0
+            features["${column}_min"] = values.minOrNull() ?: 0.0
+            features["${column}_quantile25"] = values.percentile(25) ?: 0.0
+            features["${column}_median"] = values.percentile(50) ?: 0.0
+            features["${column}_quantile75"] = values.percentile(75) ?: 0.0
         }
 
         return features
     }
 
-    private fun List<Float>.stdDev(): Double {
+    private fun List<Double>.stdDev(): Double {
         val avg = average()
         val squareDiffs = map { (it - avg).pow(2) }
         return sqrt(squareDiffs.sum() / (size - 1))
     }
 
-    private fun List<Float>.percentile(percentile: Int): Double? {
+    private fun List<Double>.percentile(percentile: Int): Double? {
         if (isEmpty()) return null
         val sortedList = sorted()
         val index = (size * percentile / 100.0).toInt()
-        return sortedList[index].toDouble()
+        return sortedList[index]
     }
 
+    private fun calculateAndSaveFeatures() {
+        Log.d("SensorService", "calculateAndSaveFeatures called")
+        val folder = File(getExternalFilesDir(null), folderName)
+        val accelerometerFile = File(folder, "accelerometer_data.csv")
+        if (accelerometerFile.exists()) {
+            Log.d("SensorService", "accelerometer_data.csv exists")
+            val lines = accelerometerFile.readLines()
+            val accelerometerData = lines.drop(1).map { line ->
+                val values = line.split(",")
+                Pair(values[0].toLong(), Triple(values[1].toFloat(), values[2].toFloat(), values[3].toFloat()))
+            }
+            val windowSize = 100 // 1秒分のデータ数
+            val windowStep = 100 // 1秒ごとにスライドするステップ数
 
+            var startIndex = 0
+            while (startIndex + windowSize <= accelerometerData.size) {
+                val windowData = accelerometerData.subList(startIndex, startIndex + windowSize)
+                val features = extractFeaturesFromSensorData(windowData.map { it.second })
+                val timestamp = windowData.first().first  // タイムスタンプを取得
+                try {
+                    val featureValues = features.values.joinToString(",")
+                    featuresFileWriter.append("$timestamp,$featureValues\n")
+                    featuresFileWriter.flush()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+                startIndex += windowStep
+            }
+        }else{
+            Log.d("SensorService", "accelerometer_data.csv does not exist")
+        }
+
+    }
 
     private fun createFileForPredictions() {
         val file = File(getExternalFilesDir(null), predictionsFileName).apply {
@@ -311,6 +364,7 @@ class SensorService : Service(), SensorEventListener {
         closeFileWriter(stepCountFileWriter)
         closeFileWriter(gyroscopeFileWriter)
         closeFileWriter(predictionsFileWriter)
+        closeFileWriter(featuresFileWriter)
     }
 
     private fun closeFileWriter(fileWriter: FileWriter) {

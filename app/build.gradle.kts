@@ -64,4 +64,5 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.3.9") // Use the latest version
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:latest.release")
 }

@@ -19,12 +19,28 @@ import android.content.pm.ServiceInfo
 import kotlin.math.pow
 import kotlin.math.sqrt
 
+private fun createFolderName(): String {
+    val timestamp = System.currentTimeMillis()
+    return "sensor_data_$timestamp"
+}
+
 class SensorService : Service(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
-    private lateinit var sensorDataFileWriter: FileWriter
     private lateinit var predictionsFileWriter: FileWriter
-    private val sensorDataFileName = "sensor_data_${System.currentTimeMillis()}.csv"
     private val predictionsFileName = "predictions_${System.currentTimeMillis()}.csv"
+
+    private lateinit var accelerometerFileWriter: FileWriter
+    private lateinit var gravityFileWriter: FileWriter
+    private lateinit var linearAccelerationFileWriter: FileWriter
+    private lateinit var stepCountFileWriter: FileWriter
+    private lateinit var gyroscopeFileWriter: FileWriter
+
+    private val accelerometerFileName = "accelerometer_data_${System.currentTimeMillis()}.csv"
+    private val gravityFileName = "gravity_data_${System.currentTimeMillis()}.csv"
+    private val linearAccelerationFileName = "linear_acceleration_data_${System.currentTimeMillis()}.csv"
+    private val stepCountFileName = "step_count_data_${System.currentTimeMillis()}.csv"
+    private val gyroscopeFileName = "gyroscope_data_${System.currentTimeMillis()}.csv"
+
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
     private val sensorDataBuffer = mutableListOf<SensorData>()
     private val extractedFeatures = mutableListOf<Map<String, Float>>()
@@ -44,6 +60,24 @@ class SensorService : Service(), SensorEventListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+
+        val folderName = createFolderName()
+        val folder = File(getExternalFilesDir(null), folderName)
+        if (!folder.exists()) {
+            folder.mkdirs()
+        }
+
+        try {
+            createFileForAccelerometerData(folder)
+            createFileForGravityData(folder)
+            createFileForLinearAccelerationData(folder)
+            createFileForStepCountData(folder)
+            createFileForGyroscopeData(folder)
+            createFileForPredictionsData(folder)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Sensor Service")
             .setContentText("Collecting sensor data...")
@@ -57,8 +91,6 @@ class SensorService : Service(), SensorEventListener {
         }
 
         initializeSensors()
-        createFileForSensorData()
-        createFileForPredictions()
 
         Thread(
             Runnable {
@@ -115,22 +147,84 @@ class SensorService : Service(), SensorEventListener {
                     dataToWrite = ArrayList(sensorDataBuffer)
                     sensorDataBuffer.clear()
                 }
-                dataToWrite.forEach { data ->
-                    val accelerometer = data.accelerometer?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"
-                    val gravity = data.gravity?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"
-                    val linearAcceleration = data.linearAcceleration?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"
-                    val stepCount = data.stepCount?.toString() ?: "N/A"
-                    val gyroscope = data.gyroscope?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"
-
-                    sensorDataFileWriter.append("${data.timestamp},$accelerometer,$gravity,$linearAcceleration,$stepCount,$gyroscope\n")
+                try {
+                    dataToWrite.forEach { data ->
+                        data.accelerometer?.let {
+                            accelerometerFileWriter.append("${data.timestamp},${it.first},${it.second},${it.third}\n")
+                        }
+                        data.gravity?.let {
+                            gravityFileWriter.append("${data.timestamp},${it.first},${it.second},${it.third}\n")
+                        }
+                        data.linearAcceleration?.let {
+                            linearAccelerationFileWriter.append("${data.timestamp},${it.first},${it.second},${it.third}\n")
+                        }
+                        data.stepCount?.let {
+                            stepCountFileWriter.append("${data.timestamp},$it\n")
+                        }
+                        data.gyroscope?.let {
+                            gyroscopeFileWriter.append("${data.timestamp},${it.first},${it.second},${it.third}\n")
+                        }
+                    }
+                    accelerometerFileWriter.flush()
+                    gravityFileWriter.flush()
+                    linearAccelerationFileWriter.flush()
+                    stepCountFileWriter.flush()
+                    gyroscopeFileWriter.flush()
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-                sensorDataFileWriter.flush()
 
                 val features = extractedFeatures.lastOrNull()
                 val predictedClass = if (features != null) runInference(features) else "N/A"
-                predictionsFileWriter.append("${System.currentTimeMillis()},$predictedClass\n")
-                predictionsFileWriter.flush()
+                try {
+                    predictionsFileWriter.append("${System.currentTimeMillis()},$predictedClass\n")
+                    predictionsFileWriter.flush()
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
             }
+        }
+    }
+
+    private fun createFileForAccelerometerData(folder: File) {
+        val file = File(folder, "accelerometer_data.csv")
+        accelerometerFileWriter = FileWriter(file, true).apply {
+            append("Timestamp,AccelX,AccelY,AccelZ\n")
+        }
+    }
+
+    private fun createFileForGravityData(folder: File) {
+        val file = File(folder, "gravity_data.csv")
+        gravityFileWriter = FileWriter(file, true).apply {
+            append("Timestamp,GravityX,GravityY,GravityZ\n")
+        }
+    }
+
+    private fun createFileForLinearAccelerationData(folder: File) {
+        val file = File(folder, "linear_acceleration_data.csv")
+        linearAccelerationFileWriter = FileWriter(file, true).apply {
+            append("Timestamp,LinearAccX,LinearAccY,LinearAccZ\n")
+        }
+    }
+
+    private fun createFileForStepCountData(folder: File) {
+        val file = File(folder, "step_count_data.csv")
+        stepCountFileWriter = FileWriter(file, true).apply {
+            append("Timestamp,StepCount\n")
+        }
+    }
+
+    private fun createFileForGyroscopeData(folder: File) {
+        val file = File(folder, "gyroscope_data.csv")
+        gyroscopeFileWriter = FileWriter(file, true).apply {
+            append("Timestamp,GyroX,GyroY,GyroZ\n")
+        }
+    }
+
+    private fun createFileForPredictionsData(folder: File) {
+        val file = File(folder, "predictions_data.csv")
+        predictionsFileWriter = FileWriter(file, true).apply {
+            append("Timestamp,PredictedClass\n")
         }
     }
 
@@ -196,14 +290,7 @@ class SensorService : Service(), SensorEventListener {
         return sortedList[index].toDouble()
     }
 
-    private fun createFileForSensorData() {
-        val file = File(getExternalFilesDir(null), sensorDataFileName).apply {
-            if (!exists()) createNewFile()
-        }
-        sensorDataFileWriter = FileWriter(file, true).apply {
-            append("Timestamp,AccelX,AccelY,AccelZ,GravityX,GravityY,GravityZ,LinearAccX,LinearAccY,LinearAccZ,StepCount,GyroX,GyroY,GyroZ\n")
-        }
-    }
+
 
     private fun createFileForPredictions() {
         val file = File(getExternalFilesDir(null), predictionsFileName).apply {
@@ -217,9 +304,21 @@ class SensorService : Service(), SensorEventListener {
     override fun onDestroy() {
         super.onDestroy()
         sensorManager.unregisterListener(this)
-        sensorDataFileWriter.close()
-        predictionsFileWriter.close()
         coroutineScope.cancel()
+        closeFileWriter(accelerometerFileWriter)
+        closeFileWriter(gravityFileWriter)
+        closeFileWriter(linearAccelerationFileWriter)
+        closeFileWriter(stepCountFileWriter)
+        closeFileWriter(gyroscopeFileWriter)
+        closeFileWriter(predictionsFileWriter)
+    }
+
+    private fun closeFileWriter(fileWriter: FileWriter) {
+        try {
+            fileWriter.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     private fun createNotificationChannel() {

@@ -16,13 +16,19 @@ import java.io.FileWriter
 import kotlinx.coroutines.*
 import android.os.Build
 import android.content.pm.ServiceInfo
+import kotlin.math.pow
+import kotlin.math.sqrt
 
 class SensorService : Service(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
-    private lateinit var fileWriter: FileWriter
-    private val fileName = "sensor_data_${System.currentTimeMillis()}.csv"
+    private lateinit var sensorDataFileWriter: FileWriter
+    private lateinit var predictionsFileWriter: FileWriter
+    private val sensorDataFileName = "sensor_data_${System.currentTimeMillis()}.csv"
+    private val predictionsFileName = "predictions_${System.currentTimeMillis()}.csv"
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
-    private val sensorDataList = mutableListOf<SensorData>()
+    private val sensorDataBuffer = mutableListOf<SensorData>()
+    private val extractedFeatures = mutableListOf<Map<String, Float>>()
+    private val sensorDataLock = Any()
 
     private var accelerometer: Sensor? = null
     private var gravitySensor: Sensor? = null
@@ -38,7 +44,6 @@ class SensorService : Service(), SensorEventListener {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Sensor Service")
             .setContentText("Collecting sensor data...")
@@ -53,6 +58,7 @@ class SensorService : Service(), SensorEventListener {
 
         initializeSensors()
         createFileForSensorData()
+        createFileForPredictions()
 
         Thread(
             Runnable {
@@ -83,11 +89,11 @@ class SensorService : Service(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        event ?: return
+        if (event == null || event.sensor == null) return
         val now = System.currentTimeMillis()
-        synchronized(sensorDataList) {
-            val data = sensorDataList.lastOrNull()?.takeIf { it.timestamp == now }
-                ?: SensorData(timestamp = now).also { sensorDataList.add(it) }
+        synchronized(sensorDataLock) {
+            val data = sensorDataBuffer.lastOrNull()?.takeIf { it.timestamp == now }
+                ?: SensorData(timestamp = now).also { sensorDataBuffer.add(it) }
 
             when (event.sensor.type) {
                 Sensor.TYPE_ACCELEROMETER -> data.accelerometer = Triple(event.values[0], event.values[1], event.values[2])
@@ -105,36 +111,114 @@ class SensorService : Service(), SensorEventListener {
         coroutineScope.launch {
             while (isActive) {
                 val dataToWrite: List<SensorData>
-                synchronized(sensorDataList) {
-                    dataToWrite = ArrayList(sensorDataList)
-                    sensorDataList.clear()
+                synchronized(sensorDataLock) {
+                    dataToWrite = ArrayList(sensorDataBuffer)
+                    sensorDataBuffer.clear()
                 }
                 dataToWrite.forEach { data ->
-                    fileWriter.append("${data.timestamp}," +
-                            "${data.accelerometer?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"}," +
-                            "${data.gravity?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"}," +
-                            "${data.linearAcceleration?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"}," +
-                            "${data.stepCount ?: "N/A"}," +
-                            "${data.gyroscope?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"}\n")
+                    val accelerometer = data.accelerometer?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"
+                    val gravity = data.gravity?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"
+                    val linearAcceleration = data.linearAcceleration?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"
+                    val stepCount = data.stepCount?.toString() ?: "N/A"
+                    val gyroscope = data.gyroscope?.let { "${it.first},${it.second},${it.third}" } ?: "N/A,N/A,N/A"
+
+                    sensorDataFileWriter.append("${data.timestamp},$accelerometer,$gravity,$linearAcceleration,$stepCount,$gyroscope\n")
                 }
-                fileWriter.flush()
+                sensorDataFileWriter.flush()
+
+                val features = extractedFeatures.lastOrNull()
+                val predictedClass = if (features != null) runInference(features) else "N/A"
+                predictionsFileWriter.append("${System.currentTimeMillis()},$predictedClass\n")
+                predictionsFileWriter.flush()
             }
         }
     }
 
+    private fun extractFeatures(dataList: List<SensorData>) {
+        if (dataList.size < 100) return
+
+        val featureList = mutableListOf<Map<String, Float>>()
+        var startIndex = 0
+        var endIndex = 99
+
+        while (endIndex < dataList.size) {
+            val windowData = dataList.subList(startIndex, endIndex + 1)
+            val accelerometerData = windowData.mapNotNull { it.accelerometer }
+            val gyroscopeData = windowData.mapNotNull { it.gyroscope }
+
+            val accelerometerFeatures = extractFeaturesFromSensorData(accelerometerData).mapValues { it.value.toFloat() }
+            val gyroscopeFeatures = extractFeaturesFromSensorData(gyroscopeData).mapValues { it.value.toFloat() }
+
+            val features = accelerometerFeatures + gyroscopeFeatures
+            featureList.add(features)
+
+            startIndex += 50
+            endIndex += 50
+        }
+
+        extractedFeatures.addAll(featureList)
+    }
+
+    private fun extractFeaturesFromSensorData(sensorData: List<Triple<Float, Float, Float>>): Map<String, Float> {
+        val features = mutableMapOf<String, Float>()
+        val xValues = sensorData.map { it.first }
+        val yValues = sensorData.map { it.second }
+        val zValues = sensorData.map { it.third }
+
+        for ((index, values) in listOf(xValues, yValues, zValues).withIndex()) {
+            val column = when (index) {
+                0 -> "x"
+                1 -> "y"
+                else -> "z"
+            }
+            features["${column}_mean"] = values.average().toFloat()
+            features["${column}_std"] = values.stdDev().toFloat()
+            features["${column}_max"] = values.maxOrNull()?.toFloat() ?: 0f
+            features["${column}_min"] = values.minOrNull()?.toFloat() ?: 0f
+            features["${column}_quantile25"] = values.percentile(25)?.toFloat() ?: 0f
+            features["${column}_median"] = values.percentile(50)?.toFloat() ?: 0f
+            features["${column}_quantile75"] = values.percentile(75)?.toFloat() ?: 0f
+        }
+
+        return features
+    }
+
+    private fun List<Float>.stdDev(): Double {
+        val avg = average()
+        val squareDiffs = map { (it - avg).pow(2) }
+        return sqrt(squareDiffs.sum() / (size - 1))
+    }
+
+    private fun List<Float>.percentile(percentile: Int): Double? {
+        if (isEmpty()) return null
+        val sortedList = sorted()
+        val index = (size * percentile / 100.0).toInt()
+        return sortedList[index].toDouble()
+    }
+
     private fun createFileForSensorData() {
-        val file = File(getExternalFilesDir(null), fileName).apply {
+        val file = File(getExternalFilesDir(null), sensorDataFileName).apply {
             if (!exists()) createNewFile()
         }
-        fileWriter = FileWriter(file, true).apply {
+        sensorDataFileWriter = FileWriter(file, true).apply {
             append("Timestamp,AccelX,AccelY,AccelZ,GravityX,GravityY,GravityZ,LinearAccX,LinearAccY,LinearAccZ,StepCount,GyroX,GyroY,GyroZ\n")
+        }
+    }
+
+    private fun createFileForPredictions() {
+        val file = File(getExternalFilesDir(null), predictionsFileName).apply {
+            if (!exists()) createNewFile()
+        }
+        predictionsFileWriter = FileWriter(file, true).apply {
+            append("Timestamp,PredictedClass\n")
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         sensorManager.unregisterListener(this)
-        fileWriter.close()
+        sensorDataFileWriter.close()
+        predictionsFileWriter.close()
         coroutineScope.cancel()
     }
 
@@ -147,12 +231,16 @@ class SensorService : Service(), SensorEventListener {
         getSystemService(NotificationManager::class.java).createNotificationChannel(serviceChannel)
     }
 
+    private fun runInference(features: Map<String, Float>): String {
+        // ONNXモデルを使用して推論を行う処理を実装
+        // 推論結果を文字列として返す
+        // 例: "Walking", "Running", "Sitting", etc.
+        return "Predicted Activity"
+    }
+
     companion object {
         const val CHANNEL_ID = "SensorServiceChannel"
     }
-
-
-
 }
 
 data class SensorData(

@@ -19,6 +19,18 @@ import android.content.pm.ServiceInfo
 import kotlin.math.pow
 import kotlin.math.sqrt
 import android.util.Log
+import ai.onnxruntime.OnnxTensor
+import ai.onnxruntime.OrtEnvironment
+import ai.onnxruntime.OrtSession
+import java.nio.FloatBuffer
+import ai.onnxruntime.OnnxValue
+import com.opencsv.CSVWriter
+import ai.onnxruntime.TensorInfo
+import ai.onnxruntime.SequenceInfo
+import java.util.concurrent.TimeUnit
+import ai.onnxruntime.OnnxSequence
+import ai.onnxruntime.*
+
 
 private fun createFolderName(): String {
     val timestamp = System.currentTimeMillis()
@@ -27,8 +39,6 @@ private fun createFolderName(): String {
 
 class SensorService : Service(), SensorEventListener {
     private lateinit var sensorManager: SensorManager
-    private lateinit var predictionsFileWriter: FileWriter
-    private val predictionsFileName = "predictions_${System.currentTimeMillis()}.csv"
     private lateinit var folderName: String
 
     private lateinit var accelerometerFileWriter: FileWriter
@@ -57,12 +67,62 @@ class SensorService : Service(), SensorEventListener {
     private var stepCounterSensor: Sensor? = null
     private var gyroscopeSensor: Sensor? = null
 
+    private lateinit var ortEnvironment: OrtEnvironment
+    private lateinit var wheelchairSession: OrtSession
+    private val wheelchairActivities = listOf("carry", "clean", "clothes", "cooking", "high", "low", "mid", "rest", "tablet")
+    private lateinit var predictionsFileWriter: FileWriter
+    private val predictionsFileName = "predictions_data_${System.currentTimeMillis()}.csv"
+    private val writtenTimestamps = mutableSetOf<Long>()
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        loadWheelchairModel()
     }
+
+    private fun loadWheelchairModel() {
+        try {
+            val modelFile = assets.open("wheelchair_rw_model.onnx")
+            val modelBytes = modelFile.readBytes()
+            ortEnvironment = OrtEnvironment.getEnvironment()
+            val sessionOptions = OrtSession.SessionOptions()
+            wheelchairSession = ortEnvironment.createSession(modelBytes, sessionOptions)
+
+            // 入力層と出力層の名前をログに出力
+            val inputNames = wheelchairSession.inputNames
+            val outputNames = wheelchairSession.outputNames
+
+            Log.d("Model Input Names", "Input names: $inputNames")
+            Log.d("Model Output Names", "Output names: $outputNames")
+
+            // 出力層の情報を取得
+            val outputInfo = wheelchairSession.outputInfo
+            Log.d("Model Output Info", "Output info: $outputInfo")
+            for ((name, value) in outputInfo) {
+                Log.d("Model Output Info", "Output name: $name")
+                val typeInfo = value.info
+                when (typeInfo) {
+                    is TensorInfo -> {
+                        val shape = typeInfo.shape
+                        Log.d("Model Output Shape", "Output shape: ${shape.joinToString(", ")}")
+                    }
+                    is SequenceInfo -> {
+                        Log.d("Model Output Info", "Output info is a sequence: $typeInfo")
+                    }
+                    else -> {
+                        Log.d("Model Output Info", "Output info is not a tensor: $typeInfo")
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("Wheelchair Model Loading", "Error loading the model", e)
+        }
+    }
+
+
+
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
 
@@ -78,8 +138,8 @@ class SensorService : Service(), SensorEventListener {
             createFileForLinearAccelerationData(folder)
             createFileForStepCountData(folder)
             createFileForGyroscopeData(folder)
-            createFileForPredictionsData(folder)
             createFileForFeaturesData(folder)
+            createFileForPredictionsData(folder)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -233,19 +293,23 @@ class SensorService : Service(), SensorEventListener {
         }
     }
 
-    private fun createFileForPredictionsData(folder: File) {
-        val file = File(folder, "predictions_data.csv")
-        predictionsFileWriter = FileWriter(file, true).apply {
-            append("Timestamp,PredictedClass\n")
-        }
-    }
 
     private fun createFileForFeaturesData(folder: File) {
         val file = File(folder, FEATURES_FILE_NAME)
         featuresFileWriter = FileWriter(file, true).apply {
             if (file.length() == 0L) {
-                append("Timestamp,XMean,XStdDev,XMax,XMin,XQ1,XQ2,XQ3,YMean,YStdDev,YMax,YMin,YQ1,YQ2,YQ3,ZMean,ZStdDev,ZMax,ZMin,ZQ1,ZQ2,ZQ3\n")
+                append("Timestamp,Ax_m, Ay_m, Az_m, Axy_m, Ayz_m, Axz_m, Axyz_m, Ax_sd, Ay_sd, Az_sd, Axy_sd, Ayz_sd, Axz_sd, Axyz_sd, " +
+                        "Ax_max, Ay_max, Az_max, Axy_max, Ayz_max, Axz_max, Axyz_max, Ax_min, Ay_min, Az_min, Axy_min, Ayz_min, Axz_min, Axyz_min, " +
+                        "Ax_25, Ay_25, Az_25, Axy_25, Ayz_25, Axz_25, Axyz_25, Ax_50, Ay_50, Az_50, Axy_50, Ayz_50, Axz_50, Axyz_50, " +
+                        "Ax_75, Ay_75, Az_75, Axy_75, Ayz_75, Axz_75, Axyz_75\n")
             }
+        }
+    }
+
+    private fun createFileForPredictionsData(folder: File) {
+        val file = File(folder, predictionsFileName)
+        predictionsFileWriter = FileWriter(file, true).apply {
+            append("Timestamp,PredictedActivity\n")
         }
     }
 
@@ -276,23 +340,52 @@ class SensorService : Service(), SensorEventListener {
 
     private fun extractFeaturesFromSensorData(sensorData: List<Triple<Float, Float, Float>>): Map<String, Double> {
         val features = mutableMapOf<String, Double>()
-        val xValues = sensorData.map { it.first.toDouble() }
-        val yValues = sensorData.map { it.second.toDouble() }
-        val zValues = sensorData.map { it.third.toDouble() }
+        val axis = listOf("x", "y", "z")
 
-        for ((index, values) in listOf(xValues, yValues, zValues).withIndex()) {
-            val column = when (index) {
-                0 -> "x"
-                1 -> "y"
-                else -> "z"
+        val axisValues = listOf(
+            sensorData.map { it.first.toDouble() },
+            sensorData.map { it.second.toDouble() },
+            sensorData.map { it.third.toDouble() }
+        )
+
+        val combinedValues = listOf(
+            sensorData.map { sqrt(it.first.toDouble().pow(2) + it.second.toDouble().pow(2)) },
+            sensorData.map { sqrt(it.second.toDouble().pow(2) + it.third.toDouble().pow(2)) },
+            sensorData.map { sqrt(it.first.toDouble().pow(2) + it.third.toDouble().pow(2)) },
+            sensorData.map { sqrt(it.first.toDouble().pow(2) + it.second.toDouble().pow(2) + it.third.toDouble().pow(2)) }
+        )
+
+        val statistics = listOf("mean", "std", "max", "min", "25", "50", "75")
+
+        axis.forEachIndexed { index, a ->
+            statistics.forEach { s ->
+                when (s) {
+                    "mean" -> features["A${a}_m"] = axisValues[index].average()
+                    "std" -> features["A${a}_sd"] = axisValues[index].stdDev()
+                    "max" -> features["A${a}_max"] = axisValues[index].maxOrNull() ?: 0.0
+                    "min" -> features["A${a}_min"] = axisValues[index].minOrNull() ?: 0.0
+                    else -> features["A${a}_$s"] = axisValues[index].percentile(s.toInt()) ?: 0.0
+                }
             }
-            features["${column}_mean"] = values.average()
-            features["${column}_std"] = values.stdDev()
-            features["${column}_max"] = values.maxOrNull() ?: 0.0
-            features["${column}_min"] = values.minOrNull() ?: 0.0
-            features["${column}_quantile25"] = values.percentile(25) ?: 0.0
-            features["${column}_median"] = values.percentile(50) ?: 0.0
-            features["${column}_quantile75"] = values.percentile(75) ?: 0.0
+        }
+
+        combinedValues.forEachIndexed { index, values ->
+            val combination = when (index) {
+                0 -> "xy"
+                1 -> "yz"
+                2 -> "xz"
+                else -> "xyz"
+            }
+
+            statistics.forEach { s ->
+                when (s) {
+                    "mean" -> features["A${combination}_m"] = values.average()
+                    "std" -> features["A${combination}_sd"] = values.stdDev()
+                    "max" -> features["A${combination}_max"] = values.maxOrNull() ?: 0.0
+                    "min" -> features["A${combination}_min"] = values.minOrNull() ?: 0.0
+                    else -> features["A${combination}_$s"] = values.percentile(s.toInt()) ?: 0.0
+                }
+            }
         }
 
         return features
@@ -311,39 +404,164 @@ class SensorService : Service(), SensorEventListener {
         return sortedList[index]
     }
 
+    private fun predictWheelchairActivity(features: Map<String, Double>): String {
+        Log.d("Wheelchair Activity Prediction", "Input features: $features")
+        try {
+            val inputName = wheelchairSession.inputNames.iterator().next()
+            val shape = longArrayOf(1, features.size.toLong())
+            val floatArray = features.values.map { it.toFloat() }.toFloatArray()
+            val input = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(floatArray), shape)
+
+            Log.d("Wheelchair Activity Prediction", "Input tensor shape: ${input.info.shape}")
+            Log.d("Wheelchair Activity Prediction", "Input tensor data: ${input.floatBuffer.array().contentToString()}")
+
+            val outputs = wheelchairSession.run(mapOf(inputName to input))
+            val outputNames = wheelchairSession.outputNames
+
+            Log.d("Wheelchair Activity Prediction", "Output names: $outputNames")
+
+            val labelOutput = outputs[0] as OnnxTensor
+            Log.d("Wheelchair Activity Prediction", "Label output: ${labelOutput.info}")
+
+            val probOutput = outputs[1] as OnnxSequence
+            Log.d("Wheelchair Activity Prediction", "Probability output: ${probOutput.info}")
+
+            // Save outputs to CSV file
+            saveOutputsToCSV(labelOutput, probOutput)
+
+            val probabilities = mutableMapOf<String, Float>()
+            val probList = probOutput.value as List<*>
+            for (item in probList) {
+                if (item is OnnxMap) {
+                    val map = item.value as Map<*, *>
+                    for ((key, value) in map) {
+                        probabilities[key as String] = value as Float
+                    }
+                }
+            }
+
+            val predictedLabel = if (probabilities.isNotEmpty()) {
+                probabilities.maxByOrNull { it.value }?.key ?: "Unknown"
+            } else {
+                "Unknown"
+            }
+
+            Log.d("Wheelchair Activity Prediction", "Predicted Label: $predictedLabel")
+            Log.d("Wheelchair Activity Prediction", "Probabilities: $probabilities")
+
+            // Send broadcast with prediction result and probabilities
+            val intent = Intent("com.example.acc_app.PREDICTION")
+            intent.putExtra("predictedActivity", predictedLabel)
+            intent.putExtra("probabilities", HashMap(probabilities))
+            sendBroadcast(intent)
+
+            return predictedLabel
+        } catch (e: Exception) {
+            Log.e("Wheelchair Activity Prediction", "Error predicting activity: ${e.message}")
+            return "Unknown"
+        }
+    }
+
+    private fun saveOutputsToCSV(labelOutput: OnnxTensor, probOutput: OnnxSequence) {
+        val folder = File(getExternalFilesDir(null), folderName)
+        val file = File(folder, "model_outputs.csv")
+
+        try {
+            val fileWriter = FileWriter(file, true)
+            val csvWriter = CSVWriter(fileWriter)
+
+            // Write header row if the file is empty
+            if (file.length() == 0L) {
+                val headerRow = arrayOf("Timestamp", "Label Output", "Probability Output")
+                csvWriter.writeNext(headerRow)
+            }
+
+            // Write output data
+            val timestamp = System.currentTimeMillis()
+            val labelData = if (labelOutput is OnnxTensor) {
+                val byteBuffer = labelOutput.byteBuffer
+                if (byteBuffer != null) {
+                    val bytes = ByteArray(byteBuffer.remaining())
+                    byteBuffer.get(bytes)
+                    String(bytes, Charsets.UTF_8).trim()
+                } else {
+                    "Unknown"
+                }
+            } else {
+                "Unknown"
+            }
+
+            val probData = StringBuilder()
+            val probList = probOutput.value as List<*>
+            for (item in probList) {
+                if (item is OnnxMap) {
+                    val map = item.value as Map<*, *>
+                    for ((key, value) in map) {
+                        probData.append("${key as String}=${value as Float}|")
+                    }
+                }
+            }
+
+            val row = arrayOf(timestamp.toString(), labelData, probData.toString().removeSuffix("|"))
+            csvWriter.writeNext(row)
+
+            csvWriter.close()
+            fileWriter.close()
+        } catch (e: Exception) {
+            Log.e("Wheelchair Activity Prediction", "Error saving outputs to CSV: ${e.message}")
+        }
+    }
+
+
     private fun calculateAndSaveFeatures() {
-        Log.d("SensorService", "calculateAndSaveFeatures called")
+        //Log.d("SensorService", "calculateAndSaveFeatures called")
         val folder = File(getExternalFilesDir(null), folderName)
         val accelerometerFile = File(folder, "accelerometer_data.csv")
+        val writtenTimestamps = mutableSetOf<Long>()
+
         if (accelerometerFile.exists()) {
-            Log.d("SensorService", "accelerometer_data.csv exists")
-            val lines = accelerometerFile.readLines()
-            val accelerometerData = lines.drop(1).map { line ->
-                val values = line.split(",")
-                Pair(values[0].toLong(), Triple(values[1].toFloat(), values[2].toFloat(), values[3].toFloat()))
-            }
+            //Log.d("SensorService", "accelerometer_data.csv exists")
+            val accelerometerData = accelerometerFile.readLines()
+                .drop(1)
+                .map { line ->
+                    val values = line.split(",")
+                    Pair(values[0].toLong(), Triple(values[1].toFloat(), values[2].toFloat(), values[3].toFloat()))
+                }
+
             val windowSize = 100 // 1秒分のデータ数
             val windowStep = 100 // 1秒ごとにスライドするステップ数
 
-            var startIndex = 0
-            while (startIndex + windowSize <= accelerometerData.size) {
-                val windowData = accelerometerData.subList(startIndex, startIndex + windowSize)
-                val features = extractFeaturesFromSensorData(windowData.map { it.second })
-                val timestamp = windowData.first().first  // タイムスタンプを取得
-                try {
-                    val featureValues = features.values.joinToString(",")
-                    featuresFileWriter.append("$timestamp,$featureValues\n")
-                    featuresFileWriter.flush()
-                } catch (e: Exception) {
-                    e.printStackTrace()
+            accelerometerData.windowed(windowSize, windowStep).forEachIndexed { index, windowData ->
+                val accelerometerSensorData = windowData.map { it.second }
+                val features = extractFeaturesFromSensorData(accelerometerSensorData)
+                val timestamp = windowData.first().first + (index * 1000) // タイムスタンプを計算
+                val predictedActivity = predictWheelchairActivity(features) // predictedActivity変数を定義
+
+                if (!writtenTimestamps.contains(timestamp)) {
+                    try {
+                        val featureValues = features.values.joinToString(",")
+                        featuresFileWriter.appendLine("$timestamp,$featureValues")
+                        writtenTimestamps.add(timestamp)
+                        predictionsFileWriter.appendLine("$timestamp,$predictedActivity")
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                    }
+
+                    // Send broadcast with prediction result
+                    val intent = Intent("com.example.acc_app.PREDICTION")
+                    intent.putExtra("timestamp", timestamp)
+                    intent.putExtra("predictedActivity", predictedActivity)
+                    sendBroadcast(intent)
                 }
-                startIndex += windowStep
             }
-        }else{
+
+            featuresFileWriter.flush()
+            predictionsFileWriter.flush()
+        } else {
             Log.d("SensorService", "accelerometer_data.csv does not exist")
         }
-
     }
+
 
     private fun createFileForPredictions() {
         val file = File(getExternalFilesDir(null), predictionsFileName).apply {
@@ -365,6 +583,10 @@ class SensorService : Service(), SensorEventListener {
         closeFileWriter(gyroscopeFileWriter)
         closeFileWriter(predictionsFileWriter)
         closeFileWriter(featuresFileWriter)
+
+        wheelchairSession.close()
+        ortEnvironment.close()
+
     }
 
     private fun closeFileWriter(fileWriter: FileWriter) {
@@ -385,10 +607,60 @@ class SensorService : Service(), SensorEventListener {
     }
 
     private fun runInference(features: Map<String, Float>): String {
-        // ONNXモデルを使用して推論を行う処理を実装
-        // 推論結果を文字列として返す
-        // 例: "Walking", "Running", "Sitting", etc.
-        return "Predicted Activity"
+        // 特徴量をテンソルに変換
+        val inputTensor = OnnxTensor.createTensor(ortEnvironment, FloatBuffer.wrap(features.values.toFloatArray()), longArrayOf(1, features.size.toLong()))
+
+        // 入力テンソルを用いて推論を実行
+        val result = wheelchairSession.run(mapOf(wheelchairSession.inputNames.first() to inputTensor))
+
+        // 出力テンソルの取得
+        val labelOutputTensor = result[wheelchairSession.outputNames.first()] as OnnxTensor
+        val probOutputTensor = result[wheelchairSession.outputNames.last()] as OnnxTensor
+
+        // ラベルの取得
+        val labelIndex = labelOutputTensor.floatBuffer.argmax()
+        val predictedLabel = wheelchairActivities[labelIndex]
+
+        // 確率テンソルの処理
+        val probabilities = mutableMapOf<String, Float>()
+        wheelchairActivities.forEachIndexed { index, activity ->
+            probabilities[activity] = probOutputTensor.floatBuffer.get(index)
+        }
+
+        // 出力結果のログ出力
+        Log.d("Inference", "Model output: [array(['$predictedLabel'], dtype=object), [$probabilities]]")
+
+        // 推論結果をCSVファイルに保存
+        saveInferenceResultToCSV(predictedLabel, probabilities)
+
+        return predictedLabel
+    }
+
+
+    private fun saveInferenceResultToCSV(predictedLabel: String, probabilities: Map<String, Float>) {
+        val folder = File(getExternalFilesDir(null), folderName)
+        val file = File(folder, "inference_results.csv")
+
+        try {
+            val fileWriter = FileWriter(file, true)
+            val csvWriter = CSVWriter(fileWriter)
+
+            // ヘッダー行を書き込む（ファイルが空の場合のみ）
+            if (file.length() == 0L) {
+                val headerRow = arrayOf("Timestamp", "Predicted Label") + wheelchairActivities
+                csvWriter.writeNext(headerRow)
+            }
+
+            // 推論結果を書き込む
+            val timestamp = System.currentTimeMillis()
+            val resultRow = arrayOf(timestamp.toString(), predictedLabel) + probabilities.values.map { it.toString() }
+            csvWriter.writeNext(resultRow)
+
+            csvWriter.close()
+            fileWriter.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     companion object {
@@ -404,3 +676,16 @@ data class SensorData(
     var stepCount: Float? = null,
     var gyroscope: Triple<Float, Float, Float>? = null
 )
+
+private fun FloatBuffer.argmax(): Int {
+    var maxIndex = 0
+    var maxValue = this.get(0)
+    for (i in 1 until remaining()) {
+        val value = get(i)
+        if (value.toFloat() > maxValue.toFloat()) {
+            maxIndex = i
+            maxValue = value
+        }
+    }
+    return maxIndex
+}

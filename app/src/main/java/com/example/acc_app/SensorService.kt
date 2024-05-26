@@ -240,15 +240,6 @@ class SensorService : Service(), SensorEventListener {
                     e.printStackTrace()
                 }
 
-                val features = extractedFeatures.lastOrNull()
-                val predictedClass = if (features != null) runInference(features) else "N/A"
-                try {
-                    predictionsFileWriter.append("${System.currentTimeMillis()},$predictedClass\n")
-                    predictionsFileWriter.flush()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-
                 // 特徴量の計算と保存
                 calculateAndSaveFeatures()
 
@@ -404,7 +395,7 @@ class SensorService : Service(), SensorEventListener {
         return sortedList[index]
     }
 
-    private fun predictWheelchairActivity(features: Map<String, Double>): String {
+    private fun predictWheelchairActivity(features: Map<String, Double>): Pair<String, Map<String, Float>> {
         Log.d("Wheelchair Activity Prediction", "Input features: $features")
         try {
             val inputName = wheelchairSession.inputNames.iterator().next()
@@ -426,9 +417,6 @@ class SensorService : Service(), SensorEventListener {
             val probOutput = outputs[1] as OnnxSequence
             Log.d("Wheelchair Activity Prediction", "Probability output: ${probOutput.info}")
 
-            // Save outputs to CSV file
-            saveOutputsToCSV(labelOutput, probOutput)
-
             val probabilities = mutableMapOf<String, Float>()
             val probList = probOutput.value as List<*>
             for (item in probList) {
@@ -449,20 +437,25 @@ class SensorService : Service(), SensorEventListener {
             Log.d("Wheelchair Activity Prediction", "Predicted Label: $predictedLabel")
             Log.d("Wheelchair Activity Prediction", "Probabilities: $probabilities")
 
+            // Save outputs to CSV file
+            saveOutputsToCSV(predictedLabel, probabilities)
+
             // Send broadcast with prediction result and probabilities
             val intent = Intent("com.example.acc_app.PREDICTION")
             intent.putExtra("predictedActivity", predictedLabel)
             intent.putExtra("probabilities", HashMap(probabilities))
             sendBroadcast(intent)
 
-            return predictedLabel
+            return Pair(predictedLabel, probabilities)
         } catch (e: Exception) {
             Log.e("Wheelchair Activity Prediction", "Error predicting activity: ${e.message}")
-            return "Unknown"
+            return Pair("Unknown", emptyMap())
         }
     }
 
-    private fun saveOutputsToCSV(labelOutput: OnnxTensor, probOutput: OnnxSequence) {
+
+
+    private fun saveOutputsToCSV(predictedLabel: String, probabilities: Map<String, Float>) {
         val folder = File(getExternalFilesDir(null), folderName)
         val file = File(folder, "model_outputs.csv")
 
@@ -478,31 +471,8 @@ class SensorService : Service(), SensorEventListener {
 
             // Write output data
             val timestamp = System.currentTimeMillis()
-            val labelData = if (labelOutput is OnnxTensor) {
-                val byteBuffer = labelOutput.byteBuffer
-                if (byteBuffer != null) {
-                    val bytes = ByteArray(byteBuffer.remaining())
-                    byteBuffer.get(bytes)
-                    String(bytes, Charsets.UTF_8).trim()
-                } else {
-                    "Unknown"
-                }
-            } else {
-                "Unknown"
-            }
-
-            val probData = StringBuilder()
-            val probList = probOutput.value as List<*>
-            for (item in probList) {
-                if (item is OnnxMap) {
-                    val map = item.value as Map<*, *>
-                    for ((key, value) in map) {
-                        probData.append("${key as String}=${value as Float}|")
-                    }
-                }
-            }
-
-            val row = arrayOf(timestamp.toString(), labelData, probData.toString().removeSuffix("|"))
+            val probData = probabilities.entries.joinToString(separator = "|") { "${it.key}=${it.value}" }
+            val row = arrayOf(timestamp.toString(), predictedLabel, probData)
             csvWriter.writeNext(row)
 
             csvWriter.close()
@@ -517,7 +487,7 @@ class SensorService : Service(), SensorEventListener {
         //Log.d("SensorService", "calculateAndSaveFeatures called")
         val folder = File(getExternalFilesDir(null), folderName)
         val accelerometerFile = File(folder, "accelerometer_data.csv")
-        val writtenTimestamps = mutableSetOf<Long>()
+        //val writtenTimestamps = mutableSetOf<Long>()
 
         if (accelerometerFile.exists()) {
             //Log.d("SensorService", "accelerometer_data.csv exists")
@@ -535,14 +505,16 @@ class SensorService : Service(), SensorEventListener {
                 val accelerometerSensorData = windowData.map { it.second }
                 val features = extractFeaturesFromSensorData(accelerometerSensorData)
                 val timestamp = windowData.first().first + (index * 1000) // タイムスタンプを計算
-                val predictedActivity = predictWheelchairActivity(features) // predictedActivity変数を定義
+                val (predictedLabel, probabilities) = predictWheelchairActivity(features)
 
                 if (!writtenTimestamps.contains(timestamp)) {
                     try {
                         val featureValues = features.values.joinToString(",")
                         featuresFileWriter.appendLine("$timestamp,$featureValues")
                         writtenTimestamps.add(timestamp)
-                        predictionsFileWriter.appendLine("$timestamp,$predictedActivity")
+
+                        predictionsFileWriter.appendLine("$timestamp,$predictedLabel,${probabilities.values.joinToString(",")}")
+                        saveOutputsToCSV(predictedLabel, probabilities)
                     } catch (e: Exception) {
                         e.printStackTrace()
                     }
@@ -550,7 +522,8 @@ class SensorService : Service(), SensorEventListener {
                     // Send broadcast with prediction result
                     val intent = Intent("com.example.acc_app.PREDICTION")
                     intent.putExtra("timestamp", timestamp)
-                    intent.putExtra("predictedActivity", predictedActivity)
+                    intent.putExtra("predictedActivity", predictedLabel)
+                    intent.putExtra("probabilities", HashMap(probabilities))
                     sendBroadcast(intent)
                 }
             }

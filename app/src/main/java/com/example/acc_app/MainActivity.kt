@@ -91,6 +91,18 @@ class MainActivity : ComponentActivity() {
                     Spacer(modifier = Modifier.height(8.dp))
                 }
             }
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(text = "Predictions:", fontSize = 16.sp)
+            LazyColumn {
+                items(predictionsList) { prediction ->
+                    Text(text = "Predicted Activity: ${prediction.first}", fontSize = 14.sp)
+                    Text(text = "Probabilities:", fontSize = 14.sp)
+                    prediction.second.forEach { (activity, probability) ->
+                        Text(text = "$activity: $probability", fontSize = 12.sp)
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+            }
         }
     }
 

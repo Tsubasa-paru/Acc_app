@@ -155,9 +155,9 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
         ) {
             Text("Activity Graph (Past 7 Days)", fontSize = 18.sp)
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(60.dp))
 
-            Canvas(modifier = Modifier.fillMaxWidth().height(400.dp)) {
+            Canvas(modifier = Modifier.fillMaxWidth().height(300.dp)) {
                 val width = size.width
                 val height = size.height - 40.dp.toPx()
                 val barWidth = width / dates.size
@@ -169,7 +169,7 @@ class MainActivity : ComponentActivity() {
                 val yAxisStep = (maxDurationMinutes / 10).coerceAtLeast(1f) // At least 1 minute per step
                 val maxDurationForGraph = (yAxisStep * 10).toInt() // Round up to the nearest step
 
-                for (i in 0..10) {
+                for (i in 0..11) {
                     val durationLabel = (i * yAxisStep).toInt()
                     val y = height - (i * height / 10f).toInt()
                     drawContext.canvas.nativeCanvas.drawText(

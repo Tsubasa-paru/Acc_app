@@ -34,6 +34,19 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import android.util.Log
+import java.util.Calendar
+import android.graphics.Paint
+import androidx.compose.ui.graphics.nativeCanvas
+import android.view.View
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.layout.wrapContentSize
+import androidx.compose.ui.Alignment
+import kotlin.math.log
+
 
 class MainActivity : ComponentActivity() {
     private lateinit var predictionReceiver: BroadcastReceiver
@@ -78,8 +91,8 @@ class MainActivity : ComponentActivity() {
             // ログに7日分の判別結果を表示
             predictionsData.forEach { (date, activities) ->
                 Log.d("PredictionsData", "Date: $date")
-                activities.forEach { (activity, count) ->
-                    Log.d("PredictionsData", "Activity: $activity, Count: $count")
+                activities.forEach { (activity, duration) ->
+                    Log.d("PredictionsData", "Activity: $activity, Duration: $duration")
                 }
             }
         }
@@ -105,36 +118,6 @@ class MainActivity : ComponentActivity() {
             Text(text = statusMessage.value, fontSize = 16.sp)
 
             Spacer(modifier = Modifier.height(16.dp))
-            Text(text = "Predictions:", fontSize = 16.sp)
-            LazyColumn {
-                items(predictionsList) { prediction ->
-                    Text(text = "Predicted Activity: ${prediction.first}", fontSize = 14.sp)
-                    Text(text = "Probabilities:", fontSize = 14.sp)
-                    prediction.second.forEach { (activity, probability) ->
-                        Text(text = "$activity: $probability", fontSize = 12.sp)
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-            }
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(text = "Predictions:", fontSize = 16.sp)
-            LazyColumn {
-                items(predictionsList) { prediction ->
-                    Text(text = "Predicted Activity: ${prediction.first}", fontSize = 14.sp)
-                    Text(text = "Probabilities:", fontSize = 14.sp)
-                    prediction.second.forEach { (activity, probability) ->
-                        Text(text = "$activity: $probability", fontSize = 12.sp)
-                    }
-                    Spacer(modifier = Modifier.height(8.dp))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-            Button(onClick = {
-
-            }) {
-                Text("Show Activity Graph", fontSize = 18.sp)
-            }
             Button(onClick = {
                 showGraph.value = !showGraph.value
             }) {
@@ -151,43 +134,119 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     fun ActivityGraph(predictionsData: Map<String, Map<String, Int>>) {
+        Log.d("GraphData", "predictionsData: $predictionsData")
         val activityLabels = SensorService.WHEELCHAIR_ACTIVITIES
-        val dates = predictionsData.keys.sorted().takeLast(7)
+        val dates = (0 until 7).map { index ->
+            val calendar = Calendar.getInstance()
+            calendar.add(Calendar.DAY_OF_YEAR, -index)
+            SimpleDateFormat("MM/dd", Locale.getDefault()).format(calendar.time)
+        }.reversed()
 
-        Column {
+        LaunchedEffect(predictionsData) {
+            predictionsData.forEach { (date, activities) ->
+                Log.d("GraphData", "Date: $date")
+                activities.forEach { (activity, duration) ->
+                    Log.d("GraphData", "Activity: $activity, Duration: $duration")
+                }
+            }
+        }
+
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+        ) {
             Text("Activity Graph (Past 7 Days)", fontSize = 18.sp)
             Spacer(modifier = Modifier.height(16.dp))
 
-            Canvas(modifier = Modifier.fillMaxSize()) {
+            Canvas(modifier = Modifier.fillMaxWidth().height(400.dp)) {
                 val width = size.width
-                val height = size.height
-                val barWidth = width / (activityLabels.size * dates.size)
-                val maxCount = predictionsData.values.flatMap { it.values }.maxOrNull() ?: 0
+                val height = size.height - 40.dp.toPx()
+                val barWidth = width / dates.size
+                val maxDuration = (predictionsData.values.flatMap { it.values }.maxOrNull() ?: 1).toInt()
+                Log.d("maxDuration", "$maxDuration")
+
+                // Draw y-axis labels
+                val maxDurationMinutes = maxDuration / 60000f // Convert milliseconds to minutes
+                val yAxisStep = (maxDurationMinutes / 10).coerceAtLeast(1f) // At least 1 minute per step
+                val maxDurationForGraph = (yAxisStep * 10).toInt() // Round up to the nearest step
+
+                for (i in 0..10) {
+                    val durationLabel = (i * yAxisStep).toInt()
+                    val y = height - (i * height / 10f).toInt()
+                    drawContext.canvas.nativeCanvas.drawText(
+                        "${durationLabel}m",
+                        0f,
+                        y,
+                        Paint().apply {
+                            color = android.graphics.Color.BLACK
+                            textSize = 12.sp.toPx()
+                        }
+                    )
+                }
 
                 dates.forEachIndexed { dateIndex, date ->
-                    val dateActivities = predictionsData[date] ?: emptyMap()
-                    activityLabels.forEachIndexed { activityIndex, label ->
-                        val count = dateActivities[label] ?: 0
-                        val barHeight = if (maxCount > 0) (count.toFloat() / maxCount) * height else 0f
-                        val x = (dateIndex * activityLabels.size + activityIndex) * barWidth
+                    val dateActivities = predictionsData[date] ?: activityLabels.associateWith { 0 }
+                    var stackedDuration = 0
+                    Log.d("GraphData", "predictionsData: $predictionsData")
+                    Log.d("GraphData", "Date: $date, dateActivities: $dateActivities")
+
+                    activityLabels.forEachIndexed { index, label ->
+                        val duration = dateActivities[label] ?: 0
+                        val barHeight = (duration.toFloat() / (maxDurationForGraph * 60000)) * height
+                        val x = dateIndex * barWidth + 16.dp.toPx()
+                        val y = height - stackedDuration - barHeight.toInt()
+                        val color = androidx.compose.ui.graphics.Color.hsl(index * 360f / activityLabels.size, 0.8f, 0.5f)
                         drawRect(
-                            color = Color.Blue,
-                            topLeft = Offset(x, height - barHeight),
+                            color = color,
+                            topLeft = Offset(x, y),
                             size = Size(barWidth, barHeight)
                         )
+                        stackedDuration += barHeight.toInt()
                     }
+
+                    // Draw x-axis labels
+                    val x = dateIndex * barWidth + barWidth / 2
+                    drawContext.canvas.nativeCanvas.drawText(
+                        date,
+                        x,
+                        height + 20.dp.toPx(),
+                        Paint().apply {
+                            color = android.graphics.Color.BLACK
+                            textSize = 12.sp.toPx()
+                            textAlign = Paint.Align.CENTER
+                        }
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(16.dp))
 
-            LazyRow {
-                items(dates) { date ->
-                    Text(
-                        text = date,
-                        modifier = Modifier.padding(horizontal = 8.dp),
-                        fontSize = 12.sp
-                    )
+            // Draw legend
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    activityLabels.take(5).forEachIndexed { index, label ->
+                        val color = androidx.compose.ui.graphics.Color.hsl(index * 360f / activityLabels.size, 0.8f, 0.5f)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier.size(16.dp).background(color)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(label, fontSize = 12.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                    }
+                }
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    activityLabels.drop(5).forEachIndexed { index, label ->
+                        val color = androidx.compose.ui.graphics.Color.hsl((index + 5) * 360f / activityLabels.size, 0.8f, 0.5f)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier.size(16.dp).background(color)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(label, fontSize = 12.sp)
+                            Spacer(modifier = Modifier.width(4.dp))
+                        }
+                    }
                 }
             }
         }
@@ -256,12 +315,13 @@ class MainActivity : ComponentActivity() {
 
     private fun loadPredictionsData(): Map<String, Map<String, Int>> {
         Log.d("PredictionsData", "loadPredictionsData called")
-        val predictionsData = mutableMapOf<String, Map<String, Int>>()
+        val predictionsData = mutableMapOf<String, MutableMap<String, Int>>()
         val folderList = getExternalFilesDir(null)?.listFiles { file -> file.isDirectory && file.name.startsWith("sensor_data_") }
 
-        val dateFormat = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-        val currentDate = dateFormat.format(System.currentTimeMillis())
-        val oneWeekAgo = dateFormat.format(System.currentTimeMillis() - 7 * 24 * 60 * 60 * 1000)
+        val dateFormat = SimpleDateFormat("MM/dd", Locale.getDefault())
+
+        // 活動ラベルのリストを取得
+        val activityLabels = SensorService.WHEELCHAIR_ACTIVITIES
 
         folderList?.forEach { folder ->
             val predictionsFile = File(folder, "predictions_data.csv")
@@ -271,27 +331,26 @@ class MainActivity : ComponentActivity() {
                 val lines = predictionsFile.readLines()
                 if (lines.isNotEmpty()) {
                     val header = lines.first().split(",")
-                    val activityLabels = header.drop(2)
+
+                    var previousTimestamp = 0L
+                    var previousActivity = ""
 
                     for (line in lines.drop(1)) {
                         val values = line.split(",")
                         if (values.size == header.size) {
                             val timestamp = values[0].toLong()
                             val date = dateFormat.format(timestamp)
+                            val activity = values[1]
 
-                            if (date in oneWeekAgo..currentDate) {
-                                val activities = activityLabels.mapIndexed { index, label ->
-                                    label to values[index + 2].toFloat().toInt()
-                                }.toMap()
-
-                                val existingActivities = predictionsData[date] ?: emptyMap()
-                                val updatedActivities = existingActivities.toMutableMap()
-                                activities.forEach { (label, count) ->
-                                    val existingCount = updatedActivities[label] ?: 0
-                                    updatedActivities[label] = existingCount + count
-                                }
-                                predictionsData[date] = updatedActivities
+                            if (previousTimestamp != 0L) {
+                                val duration = (timestamp - previousTimestamp).toInt()
+                                val existingActivities = predictionsData[date] ?: mutableMapOf()
+                                existingActivities[previousActivity] = (existingActivities[previousActivity] ?: 0) + duration
+                                predictionsData[date] = existingActivities
                             }
+
+                            previousTimestamp = timestamp
+                            previousActivity = activity
                         }
                     }
                 }
@@ -300,6 +359,17 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        // 7日分の日付のリストを作成
+        val dates = (0 until 7).map { index ->
+            val calendar = Calendar.getInstance()
+            calendar.add(Calendar.DAY_OF_YEAR, -index)
+            dateFormat.format(calendar.time)
+        }.reversed()
+
+        val missingDates = dates.toSet() - predictionsData.keys
+        for (date in missingDates) {
+            predictionsData[date] = activityLabels.associateWith { 0 }.toMutableMap()
+        }
         return predictionsData
     }
 }

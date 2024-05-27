@@ -69,7 +69,7 @@ class SensorService : Service(), SensorEventListener {
 
     private lateinit var ortEnvironment: OrtEnvironment
     private lateinit var wheelchairSession: OrtSession
-    private val wheelchairActivities = listOf("carry", "clean", "clothes", "cooking", "high", "low", "mid", "rest", "tablet")
+    private val wheelchairActivities = listOf("rest", "tablet","high", "low", "mid","carry", "cooking", "clean", "clothes")
     private lateinit var predictionsFileWriter: FileWriter
     private val predictionsFileName = "predictions_data.csv"
     private val writtenTimestamps = mutableSetOf<Long>()
@@ -449,7 +449,17 @@ class SensorService : Service(), SensorEventListener {
             return Pair(predictedLabel, probabilities)
         } catch (e: Exception) {
             Log.e("Wheelchair Activity Prediction", "Error predicting activity: ${e.message}")
-            return Pair("Unknown", emptyMap())
+            // セッションが無効な場合は再度読み込む
+            try {
+                val modelBytes = assets.open("wheelchair_rw_model.onnx").readBytes()
+                val sessionOptions = OrtSession.SessionOptions()
+                wheelchairSession = ortEnvironment.createSession(modelBytes, sessionOptions)
+                // 再度予測を試みる
+                return predictWheelchairActivity(features)
+            } catch (e: Exception) {
+                Log.e("Wheelchair Activity Prediction", "Error reloading session: ${e.message}")
+                return Pair("Unknown", emptyMap())
+            }
         }
     }
 
@@ -541,17 +551,23 @@ class SensorService : Service(), SensorEventListener {
         super.onDestroy()
         sensorManager.unregisterListener(this)
         coroutineScope.cancel()
-        closeFileWriter(accelerometerFileWriter)
-        closeFileWriter(gravityFileWriter)
-        closeFileWriter(linearAccelerationFileWriter)
-        closeFileWriter(stepCountFileWriter)
-        closeFileWriter(gyroscopeFileWriter)
-        closeFileWriter(predictionsFileWriter)
-        closeFileWriter(featuresFileWriter)
 
-        wheelchairSession.close()
-        ortEnvironment.close()
+        try {
+            // ファイルライターを閉じる
+            closeFileWriter(accelerometerFileWriter)
+            closeFileWriter(gravityFileWriter)
+            closeFileWriter(linearAccelerationFileWriter)
+            closeFileWriter(stepCountFileWriter)
+            closeFileWriter(gyroscopeFileWriter)
+            closeFileWriter(predictionsFileWriter)
+            closeFileWriter(featuresFileWriter)
 
+            // OrtSession を閉じる
+            wheelchairSession.close()
+            ortEnvironment.close()
+        } catch (e: Exception) {
+            Log.e("SensorService", "Error closing resources", e)
+        }
     }
 
     private fun closeFileWriter(fileWriter: FileWriter) {

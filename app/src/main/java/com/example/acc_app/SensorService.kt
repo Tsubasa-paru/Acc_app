@@ -54,7 +54,7 @@ class SensorService : Service(), SensorEventListener {
     private val gyroscopeFileName = "gyroscope_data_${System.currentTimeMillis()}.csv"
 
     private lateinit var featuresFileWriter: FileWriter
-    private val FEATURES_FILE_NAME = "features_data_${System.currentTimeMillis()}.csv"
+    private val FEATURES_FILE_NAME = "features_data.csv"
 
     private val coroutineScope = CoroutineScope(Dispatchers.IO)
     private val sensorDataBuffer = mutableListOf<SensorData>()
@@ -71,7 +71,7 @@ class SensorService : Service(), SensorEventListener {
     private lateinit var wheelchairSession: OrtSession
     private val wheelchairActivities = listOf("carry", "clean", "clothes", "cooking", "high", "low", "mid", "rest", "tablet")
     private lateinit var predictionsFileWriter: FileWriter
-    private val predictionsFileName = "predictions_data_${System.currentTimeMillis()}.csv"
+    private val predictionsFileName = "predictions_data.csv"
     private val writtenTimestamps = mutableSetOf<Long>()
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -300,7 +300,7 @@ class SensorService : Service(), SensorEventListener {
     private fun createFileForPredictionsData(folder: File) {
         val file = File(folder, predictionsFileName)
         predictionsFileWriter = FileWriter(file, true).apply {
-            append("Timestamp,PredictedActivity\n")
+            append("Timestamp,PredictedActivity,${wheelchairActivities.joinToString(",")}\n")
         }
     }
 
@@ -536,14 +536,6 @@ class SensorService : Service(), SensorEventListener {
     }
 
 
-    private fun createFileForPredictions() {
-        val file = File(getExternalFilesDir(null), predictionsFileName).apply {
-            if (!exists()) createNewFile()
-        }
-        predictionsFileWriter = FileWriter(file, true).apply {
-            append("Timestamp,PredictedClass\n")
-        }
-    }
 
     override fun onDestroy() {
         super.onDestroy()
@@ -638,6 +630,7 @@ class SensorService : Service(), SensorEventListener {
 
     companion object {
         const val CHANNEL_ID = "SensorServiceChannel"
+        val WHEELCHAIR_ACTIVITIES = listOf("carry", "clean", "clothes", "cooking", "high", "low", "mid", "rest", "tablet")
     }
 }
 
